@@ -1,0 +1,5 @@
+openai>=1.0.0
+pydantic>=2
+python-dotenv
+tqdm
+rich

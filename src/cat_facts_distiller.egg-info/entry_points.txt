@@ -1,0 +1,5 @@
+[console_scripts]
+catfacts-build = cat_facts_distiller.build_dataset:main
+catfacts-generate-answers = cat_facts_distiller.generate_answers:main
+catfacts-generate-questions = cat_facts_distiller.generate_questions:main
+catfacts-validate = cat_facts_distiller.validate_dataset:main

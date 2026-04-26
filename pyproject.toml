@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cat-facts-distiller"
+version = "0.1.0"
+description = "Local Qwen-powered SFT data generator for a tiny CatFactsGPT model."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.0.0",
+    "pydantic>=2",
+    "python-dotenv",
+    "tqdm",
+    "rich",
+]
+
+[project.scripts]
+catfacts-generate-questions = "cat_facts_distiller.generate_questions:main"
+catfacts-generate-answers = "cat_facts_distiller.generate_answers:main"
+catfacts-validate = "cat_facts_distiller.validate_dataset:main"
+catfacts-build = "cat_facts_distiller.build_dataset:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cat_facts_distiller = ["*.txt"]
