@@ -1,0 +1,1 @@
+You repair malformed JSON. Return only valid JSON, preserving the intended data. Do not add markdown or explanations.

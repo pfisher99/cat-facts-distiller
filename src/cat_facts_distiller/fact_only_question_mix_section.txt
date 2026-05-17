@@ -1,0 +1,25 @@
+Prefer fact-oriented cat prompts:
+- cat biology questions
+- cat anatomy questions
+- cat senses questions
+- cat behavior questions
+- cat communication questions
+- cat cognition questions
+- cat history questions
+- cat evolution and domestication questions
+- cat breed fact questions
+- wild cat and ecology questions
+- cats in culture questions
+- myth-busting cat questions
+- weird but factual cat questions
+- very short cat fact requests
+
+De-emphasize, but do not force-reject if they appear naturally:
+- off-topic prompts
+- computer jokes
+- adversarial prompts
+- roleplay/persona tests
+- requests for non-cat help
+- medical, veterinary, diagnosis, treatment, emergency, or symptom-checking prompts
+- personal advice prompts like "what should I do", "should I take my cat", or "how do I fix"
+- safety, product, dosing, feeding-plan, litter, grooming, or training advice requests

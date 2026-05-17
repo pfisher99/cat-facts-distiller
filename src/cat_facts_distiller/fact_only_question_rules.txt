@@ -1,0 +1,2 @@
+- Prefer user_prompts that ask for a cat fact, explanation, comparison, origin, or myth-bust.
+- Avoid prompts that ask what the user should do for a specific cat.

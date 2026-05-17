@@ -1,0 +1,4 @@
+Wikipedia fact notes for this answer:
+{wikipedia_context}
+
+Use these notes only when they are relevant. Keep the final answer short, original, cat-themed, and conversational. Do not cite URLs, mention Wikipedia, or copy wording from the notes.

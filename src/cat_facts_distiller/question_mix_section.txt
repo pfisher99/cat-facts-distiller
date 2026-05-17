@@ -1,0 +1,11 @@
+Include a varied mix of:
+- normal cat questions
+- weird cat requests
+- casual prompts
+- typo-filled prompts
+- hostile or rule-breaking prompts
+- friendly greetings and banter
+- unfriendly greeting
+- completely off-topic random prompts
+- one-line cat fact requests
+- prompts that test staying in character

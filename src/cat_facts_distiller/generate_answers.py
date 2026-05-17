@@ -127,10 +127,11 @@ def generate_answers(
     settings = get_settings()
     questions = list(_iter_questions(in_path))
     output = ensure_parent(out_path)
+    thinking_output = ensure_parent(thinking_out_path) if thinking_out_path is not None else None
     generated_at = datetime.now(timezone.utc).isoformat()
     workers = max(1, workers)
-    rows_by_index: dict[int, dict] = {}
-    thinking_rows_by_index: dict[int, dict] = {}
+    written = 0
+    thinking_written = 0
     next_index = 0
     free_worker_ids = list(range(1, workers + 1))
 
@@ -174,67 +175,69 @@ def generate_answers(
             )
             next_index += 1
 
-    with progress:
-        total_task = progress.add_task("total answers generated", total=len(questions))
-        worker_tasks = {
-            worker_id: progress.add_task(f"worker {worker_id}: idle", total=1, completed=0)
-            for worker_id in range(1, workers + 1)
-        }
+    output_handle = output.open("w", encoding="utf-8")
+    thinking_handle = thinking_output.open("w", encoding="utf-8") if thinking_output is not None else None
+    try:
+        with progress:
+            total_task = progress.add_task("total answers generated", total=len(questions))
+            worker_tasks = {
+                worker_id: progress.add_task(f"worker {worker_id}: idle", total=1, completed=0)
+                for worker_id in range(1, workers + 1)
+            }
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures: dict[Future[tuple[int, dict | None, dict | None]], AnswerFutureState] = {}
-            submit_next(executor, futures, progress, worker_tasks)
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures: dict[Future[tuple[int, dict | None, dict | None]], AnswerFutureState] = {}
+                submit_next(executor, futures, progress, worker_tasks)
 
-            while futures:
-                done, _pending = wait(futures, return_when=FIRST_COMPLETED)
-                for future in done:
-                    state = futures.pop(future)
-                    free_worker_ids.append(state.worker_id)
-                    free_worker_ids.sort()
+                while futures:
+                    done, _pending = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        state = futures.pop(future)
+                        free_worker_ids.append(state.worker_id)
+                        free_worker_ids.sort()
 
-                    try:
-                        index, row, thinking_row = future.result()
-                    except Exception as exc:  # noqa: BLE001 - preserve long-running jobs.
-                        logger.warning("Answer worker failed: %s", exc)
+                        try:
+                            _index, row, thinking_row = future.result()
+                        except Exception as exc:  # noqa: BLE001 - preserve long-running jobs.
+                            logger.warning("Answer worker failed: %s", exc)
+                            progress.update(
+                                worker_tasks[state.worker_id],
+                                description=f"worker {state.worker_id}: {state.question_id} failed",
+                                completed=1,
+                            )
+                            progress.advance(total_task)
+                            continue
+
+                        if row is not None:
+                            output_handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                            output_handle.flush()
+                            written += 1
+                        if thinking_row is not None and thinking_handle is not None:
+                            thinking_handle.write(json.dumps(thinking_row, ensure_ascii=False) + "\n")
+                            thinking_handle.flush()
+                            thinking_written += 1
+
                         progress.update(
                             worker_tasks[state.worker_id],
-                            description=f"worker {state.worker_id}: {state.question_id} failed",
+                            description=(
+                                f"worker {state.worker_id}: {state.question_id} "
+                                f"clean={'yes' if row else 'no'} thinking={'yes' if thinking_row else 'no'}"
+                            ),
                             completed=1,
                         )
                         progress.advance(total_task)
-                        continue
 
-                    if row is not None:
-                        rows_by_index[index] = row
-                    if thinking_row is not None:
-                        thinking_rows_by_index[index] = thinking_row
+                    submit_next(executor, futures, progress, worker_tasks)
+    finally:
+        output_handle.close()
+        if thinking_handle is not None:
+            thinking_handle.close()
 
-                    progress.update(
-                        worker_tasks[state.worker_id],
-                        description=(
-                            f"worker {state.worker_id}: {state.question_id} "
-                            f"clean={'yes' if row else 'no'} thinking={'yes' if thinking_row else 'no'}"
-                        ),
-                        completed=1,
-                    )
-                    progress.advance(total_task)
-
-                submit_next(executor, futures, progress, worker_tasks)
-
-    with output.open("w", encoding="utf-8") as handle:
-        for index in sorted(rows_by_index):
-            handle.write(json.dumps(rows_by_index[index], ensure_ascii=False) + "\n")
-
-    if thinking_out_path is not None:
-        thinking_output = ensure_parent(thinking_out_path)
-        with thinking_output.open("w", encoding="utf-8") as handle:
-            for index in sorted(thinking_rows_by_index):
-                handle.write(json.dumps(thinking_rows_by_index[index], ensure_ascii=False) + "\n")
+    if thinking_output is not None:
         console.print(
-            f"[green]Wrote {len(thinking_rows_by_index)} thinking SFT rows to {thinking_output}[/green]"
+            f"[green]Wrote {thinking_written} thinking SFT rows to {thinking_output}[/green]"
         )
 
-    written = len(rows_by_index)
     console.print(f"[green]Wrote {written} raw SFT rows to {output}[/green]")
     return written
 

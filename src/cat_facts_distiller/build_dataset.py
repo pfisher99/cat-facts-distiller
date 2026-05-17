@@ -28,7 +28,8 @@ def build_dataset(
     thinking_out_path: str | Path | None = None,
     batch_size: int = 3,
     workers: int = 4,
-    avoid_context_limit: int = 250,
+    avoid_context_limit: int = -1,
+    avoid_context_token_limit: int | None = None,
     question_enable_thinking: bool | None = None,
     facts_only: bool = False,
 ) -> tuple[int, int]:
@@ -44,6 +45,7 @@ def build_dataset(
         batch_size=batch_size,
         workers=workers,
         avoid_context_limit=avoid_context_limit,
+        avoid_context_token_limit=avoid_context_token_limit,
         enable_thinking=question_enable_thinking,
         facts_only=facts_only,
     )
@@ -88,8 +90,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--avoid-context-limit",
         type=int,
-        default=250,
-        help="Existing prompts to show each question batch. Use -1 for all or 0 for none.",
+        default=-1,
+        help="Maximum existing prompts to show each question batch. Use -1 for all or 0 for none.",
+    )
+    parser.add_argument(
+        "--avoid-context-token-limit",
+        type=int,
+        default=None,
+        help=(
+            "Approximate max tokens for each question-agent request, including existing prompts. "
+            "Defaults to QUESTION_HISTORY_TOKEN_LIMIT."
+        ),
     )
     thinking_group = parser.add_mutually_exclusive_group()
     thinking_group.add_argument(
@@ -108,7 +119,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--facts-only",
         action="store_true",
-        help="Generate only factual cat prompts and reject non-fact categories.",
+        help="Bias question generation toward factual cat prompts without extra runtime category filters.",
     )
     parser.add_argument("--verbose", action="store_true")
     return parser
@@ -124,6 +135,7 @@ def main() -> None:
         batch_size=args.batch_size,
         workers=args.workers,
         avoid_context_limit=args.avoid_context_limit,
+        avoid_context_token_limit=args.avoid_context_token_limit,
         question_enable_thinking=args.question_thinking,
         facts_only=args.facts_only,
     )

@@ -71,6 +71,8 @@ The default request settings are configured in `.env.example`. Qwen/vLLM/SGLang 
 ```python
 extra_body = {
     "top_k": 20,
+    "min_p": 0.0,
+    "repetition_penalty": 1.0,
     "chat_template_kwargs": {"enable_thinking": True},
 }
 ```
@@ -118,11 +120,29 @@ data/final/catfacts_sft_with_thinking.jsonl
 python -m cat_facts_distiller.build_dataset --count 10000 --out data/final/catfacts_sft.jsonl
 ```
 
-For large builds, question generation keeps a shared global dedupe set across workers. Each new question batch also receives a snapshot of already accepted prompts so it can avoid near repeats before validation. By default it includes the latest 250 prompts in that context; use `--avoid-context-limit -1` to include all accepted prompts, or `--avoid-context-limit 0` to rely only on programmatic dedupe.
+For large builds, question generation keeps a shared global dedupe set across workers. Each new question batch also receives a snapshot of already accepted prompts so it can avoid near repeats before validation. By default it includes all accepted prompts until the full question-agent request reaches the rolling `QUESTION_HISTORY_TOKEN_LIMIT=128000` budget, counted with `tiktoken`, then drops the oldest prompts while keeping the newest context loaded. Use `--avoid-context-limit N` for an extra count cap, `--avoid-context-limit 0` to rely only on programmatic dedupe, or `--avoid-context-token-limit N` to override the configured request budget.
 
-Question generation rotates through several question-asker system prompts so the source prompts vary in tone. Some batches are normal cat questions, some are typo-filled or adversarial, and some intentionally ask random off-topic things so CatFactsGPT learns to pivot into silly cat facts instead of acting like a general assistant.
+Question and answer JSONL outputs are streamed during generation. Accepted questions are appended to the `--out` file as soon as they pass validation and dedupe, and generated answer rows are appended to their clean and thinking output files as workers finish.
 
-For fact-only prompt generation, use `--facts-only`. This limits question generation to factual cat categories such as biology, behavior, history, myths, owner tips, safety, weird facts, and short facts.
+Question generation rotates through five question-asker system prompts so the source prompts vary in tone instead of collapsing into one style. Each batch uses the next prompt in order, wrapping back to prompt 1 after prompt 5. The paired tone directive files rotate the same way.
+
+Use the prompt files like this:
+
+- `src/cat_facts_distiller/question_generator_system_prompt_01.txt`: broad default cat-fact prompt style.
+- `src/cat_facts_distiller/question_generator_system_prompt_02.txt`: messy casual internet-user style.
+- `src/cat_facts_distiller/question_generator_system_prompt_03.txt`: off-topic-heavy style for redirect examples.
+- `src/cat_facts_distiller/question_generator_system_prompt_04.txt`: adversarial and boundary-testing style.
+- `src/cat_facts_distiller/question_generator_system_prompt_05.txt`: whimsical high-variety style.
+- `src/cat_facts_distiller/fact_only_question_generator_system_prompt.txt`: used instead of the rotating five prompts when `--facts-only` is set.
+- `src/cat_facts_distiller/question_tone_directive_01.txt` through `question_tone_directive_05.txt`: per-batch user-side tone directives for normal generation.
+- `src/cat_facts_distiller/fact_only_question_tone_directive_01.txt` through `fact_only_question_tone_directive_05.txt`: per-batch user-side tone directives for `--facts-only`.
+- `src/cat_facts_distiller/question_mix_section.txt` and `fact_only_question_mix_section.txt`: the category/style mix guidance inserted into the question request.
+- `src/cat_facts_distiller/question_batch_prompt_template.txt`: the full question request template, with placeholders for count, categories, mix section, tone directive, and dedupe context.
+- `src/cat_facts_distiller/answer_generation_rules.txt`: answer-agent rules appended to `catfacts_system_prompt.txt`.
+
+Edit these text files directly to change generator behavior. Keep each file as plain prompt text; `src/cat_facts_distiller/prompts.py` only loads files and fills placeholders now.
+
+For fact-biased prompt generation, use `--facts-only`. This nudges question generation toward factual cat categories such as biology, anatomy, senses, behavior, communication, cognition, history, evolution, breeds, ecology, culture, myths, weird facts, and short facts. It is a prompt preference, not an extra runtime rejection filter: valid generated prompts can still be accepted if the model wanders into other supported categories.
 
 ```powershell
 python -m cat_facts_distiller.generate_questions --count 500 --facts-only --out data/raw/questions.jsonl

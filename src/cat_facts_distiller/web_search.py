@@ -23,7 +23,7 @@ SEARCH_TOOL_SCHEMA = {
         "name": SEARCH_TOOL_NAME,
         "description": (
             "Look up short Wikipedia summaries about cats, cat behavior, "
-            "cat health, cat safety, cat biology, or cat history before answering."
+            "cat biology, cat anatomy, cat breeds, cat evolution, or cat history before answering."
         ),
         "parameters": {
             "type": "object",
@@ -54,9 +54,6 @@ CAT_KEYWORDS = {
     "whisker",
     "litter",
     "knead",
-    "vomit",
-    "vet",
-    "veterinarian",
 }
 
 NO_SEARCH_CATEGORIES = {"refusal_or_redirect", "stay_in_character"}
@@ -112,7 +109,7 @@ def should_search(question: QuestionRecord) -> bool:
 
 def build_search_query(question: QuestionRecord) -> str:
     prompt = re.sub(r"\s+", " ", question.user_prompt).strip()
-    suffix = "cat feline fact veterinary behavior safety history"
+    suffix = "cat feline fact behavior biology anatomy breeds evolution history"
     query = f"{prompt} {suffix}"
     return _limit_chars(query, 240)
 

@@ -8,9 +8,11 @@ src/cat_facts_distiller/config.py
 src/cat_facts_distiller/generate_answers.py
 src/cat_facts_distiller/generate_questions.py
 src/cat_facts_distiller/llm_client.py
+src/cat_facts_distiller/logging_utils.py
 src/cat_facts_distiller/prompts.py
 src/cat_facts_distiller/schemas.py
 src/cat_facts_distiller/validate_dataset.py
+src/cat_facts_distiller/web_search.py
 src/cat_facts_distiller.egg-info/PKG-INFO
 src/cat_facts_distiller.egg-info/SOURCES.txt
 src/cat_facts_distiller.egg-info/dependency_links.txt

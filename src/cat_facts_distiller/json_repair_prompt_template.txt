@@ -1,0 +1,4 @@
+Repair this response into valid JSON with the same schema. Return only JSON.
+
+Raw response:
+{raw_response}

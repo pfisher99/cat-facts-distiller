@@ -7,8 +7,9 @@ Description-Content-Type: text/markdown
 Requires-Dist: openai>=1.0.0
 Requires-Dist: pydantic>=2
 Requires-Dist: python-dotenv
-Requires-Dist: tqdm
 Requires-Dist: rich
+Requires-Dist: tiktoken
+Requires-Dist: tqdm
 
 # cat-facts-distiller
 
@@ -89,6 +90,14 @@ extra_body = {
 
 Reasoning may arrive as `reasoning_content` or inside `<think>...</think>` tags. The clean dataset intentionally strips all thinking traces. The optional thinking dataset converts separate `reasoning_content` into `<think>...</think>` blocks, or preserves existing `<think>...</think>` blocks when the server returns them in `message.content`.
 
+Question generation disables thinking by default to keep prompt creation fast:
+
+```text
+QUESTION_ENABLE_THINKING=false
+```
+
+Use `--question-thinking` to enable thinking for question generation, or `--no-question-thinking` to force it off. Answer generation still follows `ENABLE_THINKING=true` by default.
+
 ## Smoke test
 
 ```powershell
@@ -122,16 +131,22 @@ data/final/catfacts_sft_with_thinking.jsonl
 python -m cat_facts_distiller.build_dataset --count 10000 --out data/final/catfacts_sft.jsonl
 ```
 
-For large builds, question generation keeps a shared global dedupe set across workers. Each new question batch also receives a snapshot of already accepted prompts so it can avoid near repeats before validation. By default it includes the latest 250 prompts in that context; use `--avoid-context-limit -1` to include all accepted prompts, or `--avoid-context-limit 0` to rely only on programmatic dedupe.
+For large builds, question generation keeps a shared global dedupe set across workers. Each new question batch also receives a snapshot of already accepted prompts so it can avoid near repeats before validation. By default it includes all accepted prompts until the full question-agent request reaches the rolling `QUESTION_HISTORY_TOKEN_LIMIT=128000` budget, counted with `tiktoken`, then drops the oldest prompts while keeping the newest context loaded. Use `--avoid-context-limit N` for an extra count cap, `--avoid-context-limit 0` to rely only on programmatic dedupe, or `--avoid-context-token-limit N` to override the configured request budget.
 
 Question generation rotates through several question-asker system prompts so the source prompts vary in tone. Some batches are normal cat questions, some are typo-filled or adversarial, and some intentionally ask random off-topic things so CatFactsGPT learns to pivot into silly cat facts instead of acting like a general assistant.
+
+For fact-only prompt generation, use `--facts-only`. This limits question generation to factual cat categories such as biology, behavior, history, myths, owner tips, safety, weird facts, and short facts.
+
+```powershell
+python -m cat_facts_distiller.generate_questions --count 500 --facts-only --out data/raw/questions.jsonl
+```
 
 ## Step-by-step commands
 
 Generate candidate prompts:
 
 ```powershell
-python -m cat_facts_distiller.generate_questions --count 500 --workers 4 --out data/raw/questions.jsonl
+python -m cat_facts_distiller.generate_questions --count 500 --workers 4 --facts-only --no-question-thinking --out data/raw/questions.jsonl
 ```
 
 Generate answers:

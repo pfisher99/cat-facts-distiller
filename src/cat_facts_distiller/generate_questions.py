@@ -11,9 +11,11 @@ from collections.abc import Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from threading import local
 
+import tiktoken
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -38,7 +40,13 @@ from .prompts import (
     question_generator_system_prompt,
     question_tone_directive,
 )
-from .schemas import CATEGORIES, FACT_ONLY_CATEGORIES, QuestionCandidate, QuestionRecord
+from .schemas import (
+    CATEGORIES,
+    CATEGORY_ALIASES,
+    DIFFICULTY_ALIASES,
+    QuestionCandidate,
+    QuestionRecord,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -145,14 +153,20 @@ def _clean_line_field(value: str) -> str:
     return value.strip().strip('"').strip("'").strip("`").strip()
 
 
+QUESTION_CATEGORY_LABELS = tuple(dict.fromkeys((*CATEGORIES, *CATEGORY_ALIASES)))
+QUESTION_DIFFICULTY_LABELS = tuple(dict.fromkeys(("easy", "medium", "hard", *DIFFICULTY_ALIASES)))
+
 QUESTION_LINE_RE = re.compile(
-    r"(?P<category>" + "|".join(re.escape(category) for category in CATEGORIES) + r")"
+    r"(?P<category>"
+    + "|".join(re.escape(category) for category in QUESTION_CATEGORY_LABELS)
+    + r")"
     r"\s*\|\s*"
-    r"(?P<difficulty>easy|medium|hard)"
+    r"(?P<difficulty>"
+    + "|".join(re.escape(difficulty) for difficulty in QUESTION_DIFFICULTY_LABELS)
+    + r")"
     r"\s*\|\s*",
     re.IGNORECASE,
 )
-
 
 def _parse_question_lines(text: str) -> tuple[list[QuestionCandidate], list[QuestionItemRejection]]:
     items: list[QuestionCandidate] = []
@@ -292,18 +306,39 @@ def _thread_client(settings) -> LocalLLMClient:
     return client
 
 
-def _question_batch(
+@lru_cache(maxsize=16)
+def _token_encoding(model: str) -> tiktoken.Encoding:
+    try:
+        return tiktoken.encoding_for_model(model)
+    except KeyError:
+        pass
+
+    for encoding_name in ("o200k_base", "cl100k_base"):
+        try:
+            return tiktoken.get_encoding(encoding_name)
+        except ValueError:
+            continue
+    raise RuntimeError("No usable tiktoken encoding is available.")
+
+
+def _messages_token_count(messages: Sequence[dict[str, str]], *, model: str) -> int:
+    encoding = _token_encoding(model)
+    return sum(
+        len(encoding.encode(message.get("role", "")))
+        + len(encoding.encode(message.get("content", "")))
+        + 4
+        for message in messages
+    ) + 2
+
+
+def _question_messages(
     *,
     batch_index: int,
     requested: int,
     avoid_prompts: Sequence[str],
-    settings,
-    enable_thinking: bool,
     facts_only: bool,
-    client: LocalLLMClient | None = None,
-) -> QuestionBatchResult:
-    llm = client or _thread_client(settings)
-    messages = [
+) -> list[dict[str, str]]:
+    return [
         {
             "role": "system",
             "content": question_generator_system_prompt(batch_index, facts_only=facts_only),
@@ -318,6 +353,44 @@ def _question_batch(
             ),
         },
     ]
+
+
+def _question_messages_token_count(
+    *,
+    batch_index: int,
+    requested: int,
+    avoid_prompts: Sequence[str],
+    facts_only: bool,
+    model: str,
+) -> int:
+    return _messages_token_count(
+        _question_messages(
+            batch_index=batch_index,
+            requested=requested,
+            avoid_prompts=avoid_prompts,
+            facts_only=facts_only,
+        ),
+        model=model,
+    )
+
+
+def _question_batch(
+    *,
+    batch_index: int,
+    requested: int,
+    avoid_prompts: Sequence[str],
+    settings,
+    enable_thinking: bool,
+    facts_only: bool,
+    client: LocalLLMClient | None = None,
+) -> QuestionBatchResult:
+    llm = client or _thread_client(settings)
+    messages = _question_messages(
+        batch_index=batch_index,
+        requested=requested,
+        avoid_prompts=avoid_prompts,
+        facts_only=facts_only,
+    )
     if hasattr(llm, "chat_generation"):
         try:
             generation = llm.chat_generation(messages, enable_thinking=enable_thinking)
@@ -343,12 +416,50 @@ def _question_batch(
     )
 
 
-def _avoid_prompt_snapshot(prompt_history: list[str], limit: int) -> list[str]:
+def _avoid_prompt_snapshot(
+    prompt_history: list[str],
+    limit: int,
+    *,
+    token_limit: int,
+    batch_index: int,
+    requested: int,
+    facts_only: bool,
+    model: str,
+) -> list[str]:
     if limit == 0:
         return []
-    if limit < 0:
-        return list(prompt_history)
-    return prompt_history[-limit:]
+    prompts = list(prompt_history) if limit < 0 else prompt_history[-limit:]
+    if token_limit <= 0 or not prompts:
+        return prompts
+
+    if (
+        _question_messages_token_count(
+            batch_index=batch_index,
+            requested=requested,
+            avoid_prompts=prompts,
+            facts_only=facts_only,
+            model=model,
+        )
+        <= token_limit
+    ):
+        return prompts
+
+    low = 0
+    high = len(prompts)
+    while low < high:
+        midpoint = (low + high) // 2
+        message_tokens = _question_messages_token_count(
+            batch_index=batch_index,
+            requested=requested,
+            avoid_prompts=prompts[midpoint:],
+            facts_only=facts_only,
+            model=model,
+        )
+        if message_tokens <= token_limit:
+            high = midpoint
+        else:
+            low = midpoint + 1
+    return prompts[low:]
 
 
 def generate_questions(
@@ -357,7 +468,8 @@ def generate_questions(
     out_path: str | Path,
     batch_size: int = 3,
     workers: int = 4,
-    avoid_context_limit: int = 250,
+    avoid_context_limit: int = -1,
+    avoid_context_token_limit: int | None = None,
     enable_thinking: bool | None = None,
     facts_only: bool = False,
     client: LocalLLMClient | None = None,
@@ -365,6 +477,11 @@ def generate_questions(
     settings = get_settings()
     question_enable_thinking = (
         settings.question_enable_thinking if enable_thinking is None else enable_thinking
+    )
+    question_history_token_limit = (
+        settings.question_history_token_limit
+        if avoid_context_token_limit is None
+        else avoid_context_token_limit
     )
     output = ensure_parent(out_path)
     bad_dir = Path("data/raw/bad_generations")
@@ -397,7 +514,15 @@ def generate_questions(
             requested = min(batch_size, count - len(rows) - scheduled_capacity)
             batch_index = submitted_batches
             worker_id = free_worker_ids.pop(0)
-            avoid_prompts = _avoid_prompt_snapshot(prompt_history, avoid_context_limit)
+            avoid_prompts = _avoid_prompt_snapshot(
+                prompt_history,
+                avoid_context_limit,
+                token_limit=question_history_token_limit,
+                batch_index=batch_index,
+                requested=requested,
+                facts_only=facts_only,
+                model=settings.model,
+            )
             progress.update(
                 worker_tasks[worker_id],
                 description=f"worker {worker_id}: batch {batch_index + 1} asking for {requested}",
@@ -431,103 +556,94 @@ def generate_questions(
         transient=False,
     )
 
-    with progress:
-        total_task = progress.add_task("total prompts accepted", total=count)
-        worker_tasks = {
-            worker_id: progress.add_task(f"worker {worker_id}: idle", total=1, completed=0)
-            for worker_id in range(1, workers + 1)
-        }
+    with output.open("w", encoding="utf-8") as output_handle:
+        with progress:
+            total_task = progress.add_task("total prompts accepted", total=count)
+            worker_tasks = {
+                worker_id: progress.add_task(f"worker {worker_id}: idle", total=1, completed=0)
+                for worker_id in range(1, workers + 1)
+            }
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures: dict[Future[QuestionBatchResult], QuestionFutureState] = {}
-            submit_next(executor, futures, progress, worker_tasks)
-
-            while futures:
-                done, _pending = wait(futures, return_when=FIRST_COMPLETED)
-                for future in done:
-                    state = futures.pop(future)
-                    scheduled_capacity -= state.requested
-                    free_worker_ids.append(state.worker_id)
-                    free_worker_ids.sort()
-
-                    try:
-                        result = future.result()
-                    except Exception as exc:  # noqa: BLE001 - preserve long-running jobs.
-                        logger.warning("Question batch failed: %s", exc)
-                        progress.update(
-                            worker_tasks[state.worker_id],
-                            description=f"worker {state.worker_id}: batch {state.batch_index + 1} failed",
-                            completed=1,
-                        )
-                        continue
-
-                    if result.bad_generation:
-                        _save_bad_generation(result.bad_generation, bad_dir)
-                    accepted = 0
-                    duplicates = 0
-                    ignored = 0
-                    runtime_rejections: list[QuestionItemRejection] = []
-                    for item in result.items:
-                        if len(rows) >= count:
-                            ignored += 1
-                            continue
-                        if facts_only and item.category not in FACT_ONLY_CATEGORIES:
-                            runtime_rejections.append(
-                                QuestionItemRejection(
-                                    reason="non_fact_category",
-                                    raw_item=item.model_dump(),
-                                )
-                            )
-                            continue
-                        normalized = normalize_prompt(item.user_prompt)
-                        if not normalized or normalized in seen:
-                            duplicates += 1
-                            continue
-                        seen.add(normalized)
-                        prompt_history.append(item.user_prompt)
-                        question = QuestionRecord(
-                            id=f"q_{len(rows) + 1:06d}",
-                            category=item.category,
-                            difficulty=item.difficulty,
-                            user_prompt=item.user_prompt,
-                        )
-                        rows.append(question.model_dump())
-                        accepted += 1
-                        progress.update(total_task, completed=min(len(rows), count))
-
-                    all_rejections = [*result.item_rejections, *runtime_rejections]
-                    _append_question_rejections(
-                        rejected_questions_path,
-                        worker_id=state.worker_id,
-                        batch_index=state.batch_index,
-                        rejections=all_rejections,
-                    )
-
-                    ignored_text = f", ignored {ignored}" if ignored else ""
-                    invalid_counts = Counter(rejection.reason for rejection in all_rejections)
-                    invalid_text = ""
-                    if invalid_counts:
-                        invalid_detail = ", ".join(
-                            f"{reason}={amount}" for reason, amount in sorted(invalid_counts.items())
-                        )
-                        invalid_text = f", invalid {sum(invalid_counts.values())} ({invalid_detail})"
-                    progress.update(
-                        worker_tasks[state.worker_id],
-                        description=(
-                            f"worker {state.worker_id}: batch {state.batch_index + 1} "
-                            f"accepted {accepted}, duplicates {duplicates}{invalid_text}{ignored_text}"
-                        ),
-                        completed=1,
-                    )
-
-                    if accepted == 0 and result.items:
-                        logger.info("Question batch returned only duplicate prompts.")
-
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures: dict[Future[QuestionBatchResult], QuestionFutureState] = {}
                 submit_next(executor, futures, progress, worker_tasks)
 
-    with output.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                while futures:
+                    done, _pending = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        state = futures.pop(future)
+                        scheduled_capacity -= state.requested
+                        free_worker_ids.append(state.worker_id)
+                        free_worker_ids.sort()
+
+                        try:
+                            result = future.result()
+                        except Exception as exc:  # noqa: BLE001 - preserve long-running jobs.
+                            logger.warning("Question batch failed: %s", exc)
+                            progress.update(
+                                worker_tasks[state.worker_id],
+                                description=f"worker {state.worker_id}: batch {state.batch_index + 1} failed",
+                                completed=1,
+                            )
+                            continue
+
+                        if result.bad_generation:
+                            _save_bad_generation(result.bad_generation, bad_dir)
+                        accepted = 0
+                        duplicates = 0
+                        ignored = 0
+                        for item in result.items:
+                            if len(rows) >= count:
+                                ignored += 1
+                                continue
+                            normalized = normalize_prompt(item.user_prompt)
+                            if not normalized or normalized in seen:
+                                duplicates += 1
+                                continue
+                            seen.add(normalized)
+                            prompt_history.append(item.user_prompt)
+                            question = QuestionRecord(
+                                id=f"q_{len(rows) + 1:06d}",
+                                category=item.category,
+                                difficulty=item.difficulty,
+                                user_prompt=item.user_prompt,
+                            )
+                            row = question.model_dump()
+                            rows.append(row)
+                            output_handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                            output_handle.flush()
+                            accepted += 1
+                            progress.update(total_task, completed=min(len(rows), count))
+
+                        all_rejections = result.item_rejections
+                        _append_question_rejections(
+                            rejected_questions_path,
+                            worker_id=state.worker_id,
+                            batch_index=state.batch_index,
+                            rejections=all_rejections,
+                        )
+
+                        ignored_text = f", ignored {ignored}" if ignored else ""
+                        invalid_counts = Counter(rejection.reason for rejection in all_rejections)
+                        invalid_text = ""
+                        if invalid_counts:
+                            invalid_detail = ", ".join(
+                                f"{reason}={amount}" for reason, amount in sorted(invalid_counts.items())
+                            )
+                            invalid_text = f", invalid {sum(invalid_counts.values())} ({invalid_detail})"
+                        progress.update(
+                            worker_tasks[state.worker_id],
+                            description=(
+                                f"worker {state.worker_id}: batch {state.batch_index + 1} "
+                                f"accepted {accepted}, duplicates {duplicates}{invalid_text}{ignored_text}"
+                            ),
+                            completed=1,
+                        )
+
+                        if accepted == 0 and result.items:
+                            logger.info("Question batch returned only duplicate prompts.")
+
+                    submit_next(executor, futures, progress, worker_tasks)
 
     if len(rows) < count:
         console.print(f"[yellow]Generated {len(rows)} of {count} requested prompts.[/yellow]")
@@ -561,13 +677,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--avoid-context-limit",
         type=int,
-        default=250,
-        help="Existing prompts to show each question batch. Use -1 for all or 0 for none.",
+        default=-1,
+        help="Maximum existing prompts to show each question batch. Use -1 for all or 0 for none.",
+    )
+    parser.add_argument(
+        "--avoid-context-token-limit",
+        type=int,
+        default=None,
+        help=(
+            "Approximate max tokens for each question-agent request, including existing prompts. "
+            "Defaults to QUESTION_HISTORY_TOKEN_LIMIT."
+        ),
     )
     parser.add_argument(
         "--facts-only",
         action="store_true",
-        help="Generate only factual cat prompts and reject non-fact categories.",
+        help="Bias generation toward factual cat prompts without adding extra runtime category filters.",
     )
     parser.add_argument("--verbose", action="store_true")
     return parser
@@ -582,6 +707,7 @@ def main() -> None:
         batch_size=args.batch_size,
         workers=args.workers,
         avoid_context_limit=args.avoid_context_limit,
+        avoid_context_token_limit=args.avoid_context_token_limit,
         enable_thinking=args.question_thinking,
         facts_only=args.facts_only,
     )

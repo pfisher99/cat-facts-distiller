@@ -1,0 +1,33 @@
+Create exactly {count} diverse user prompts for CatFactsGPT.
+
+Return exactly {count} plain text lines.
+
+Each line must use this exact format:
+category | difficulty | user_prompt
+
+Example:
+cat_behavior | easy | Why do cats knead blankets?
+
+Allowed categories:
+{categories}
+
+Allowed difficulty values:
+- easy
+- medium
+- hard
+
+{mix_section}
+
+Batch tone directive:
+{tone_line}
+{off_topic_section}
+
+Rules:
+- Each user_prompt must be under 500 characters.
+{fact_only_rules}
+- Do not include answers.
+- Do not include duplicate prompts.
+- Do not mention datasets, Qwen, SFT, LoRA, JSON, or training.
+- Do not put the pipe character inside user_prompt.
+- Return only the delimited lines.
+{avoid_prompt_section}

@@ -40,8 +40,10 @@ class Settings:
     min_p: float = 0.0
     max_tokens: int = 8192
     presence_penalty: float = 1.5
+    repetition_penalty: float = 1.0
     enable_thinking: bool = True
     question_enable_thinking: bool = False
+    question_history_token_limit: int = 128_000
     enable_wikipedia_lookup: bool = False
     wikipedia_results: int = 3
     wikipedia_timeout: float = 8.0
@@ -54,6 +56,7 @@ class Settings:
         body: dict = {
             "top_k": self.top_k,
             "min_p": self.min_p,
+            "repetition_penalty": self.repetition_penalty,
             "chat_template_kwargs": {"enable_thinking": thinking},
         }
         return body
@@ -71,10 +74,15 @@ def get_settings() -> Settings:
         min_p=_float_env("MIN_P", Settings.min_p),
         max_tokens=_int_env("MAX_TOKENS", Settings.max_tokens),
         presence_penalty=_float_env("PRESENCE_PENALTY", Settings.presence_penalty),
+        repetition_penalty=_float_env("REPETITION_PENALTY", Settings.repetition_penalty),
         enable_thinking=_bool_env("ENABLE_THINKING", Settings.enable_thinking),
         question_enable_thinking=_bool_env(
             "QUESTION_ENABLE_THINKING",
             Settings.question_enable_thinking,
+        ),
+        question_history_token_limit=_int_env(
+            "QUESTION_HISTORY_TOKEN_LIMIT",
+            Settings.question_history_token_limit,
         ),
         enable_wikipedia_lookup=_bool_env(
             "ENABLE_WIKIPEDIA_LOOKUP",
